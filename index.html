@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AKM TV - Free IPTV Player</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load hls.js for robust HLS streaming playback -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.10/dist/hls.min.js"></script>
+    <!-- Load Firebase SDKs for environment setup (kept minimal) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Minimal Firebase Initialization
+        window.initFirebase = async () => {
+            try {
+                const app = initializeApp(firebaseConfig);
+                const auth = getAuth(app);
+                getFirestore(app); // Initialize Firestore for environment requirement
+                setLogLevel('error');
+
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Firebase Auth Error:", error);
+            }
+        };
+    </script>
+    <style>
+        /* Custom scrollbar for a cleaner look */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background-color: #3f3f46; /* gray-700 */
+            border-radius: 4px;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #18181b; /* zinc-900 */
+        }
+        /* State classes for mobile sidebar visibility */
+        .sidebar-hidden {
+            transform: translateX(-100%);
+        }
+        .sidebar-visible {
+            transform: translateX(0);
+        }
+        /* Core fix: Use max-height 0 and transition on max-height for collapse */
+        .channel-group-content {
+            overflow: hidden;
+            transition: max-height 0.5s ease-in-out;
+        }
+
+        /* Desktop Fix: On screens MD (768px) and up, ensure the sidebar is static and visible */
+        @media (min-width: 768px) {
+            #sidebar {
+                position: static !important;
+                transform: translateX(0) !important;
+            }
+        }
+    </style>
+</head>
+
+<body class="bg-gray-900 text-white min-h-screen font-sans" onload="initApp()">
+
+    <!-- Header (Fixed Top) -->
+    <header class="bg-zinc-800 p-4 shadow-lg flex justify-between items-center sticky top-0 z-20">
+        <!-- Sidebar Toggle (Mobile Only) -->
+        <button id="sidebar-toggle-btn" onclick="toggleSidebar()" class="md:hidden p-2 rounded-full hover:bg-zinc-700 transition duration-150">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+        </button>
+
+        <!-- Centered Title -->
+        <h1 class="text-3xl font-extrabold text-red-500 tracking-wider absolute left-1/2 transform -translate-x-1/2">
+            AKM TV
+        </h1>
+        
+        <!-- Placeholder for symmetry -->
+        <div class="w-6 md:w-0"></div> 
+    </header>
+
+    <!-- Main Content Wrapper -->
+    <main class="flex h-[calc(100vh-68px)] relative">
+
+        <!-- Sidebar / Channel List (Left Corner) -->
+        <aside id="sidebar" class="fixed inset-y-0 left-0 transition-transform duration-300 ease-in-out w-64 bg-zinc-900 border-r border-zinc-700 p-4 overflow-y-auto z-10 custom-scrollbar sidebar-hidden md:static md:translate-x-0">
+            
+            <h2 class="text-xl font-semibold mb-2 text-gray-200 border-b border-zinc-700 pb-2">Channel List</h2>
+            
+            <!-- Search Input -->
+            <input type="text" id="channel-search-input" placeholder="Search channels..."
+                class="w-full p-2 mb-4 bg-zinc-700 border border-zinc-600 rounded-lg text-white placeholder-gray-400 focus:ring-red-500 focus:border-red-500">
+            
+            <div id="channel-list" class="space-y-1">
+                <!-- Initial content state -->
+                <p class="text-gray-500 text-sm">Loading playlist from code...</p>
+            </div>
+        </aside>
+
+        <!-- Main View (Landing or Player) -->
+        <section class="flex-grow p-4 bg-gray-900 overflow-auto">
+
+            <!-- 1. LANDING PAGE VIEW -->
+            <div id="landing-page" class="flex flex-col items-center justify-center min-h-full text-center p-8 transition-opacity duration-500">
+                <div class="max-w-xl">
+                    <h2 class="text-5xl md:text-6xl font-black text-red-500 mb-6 drop-shadow-lg">
+                        Stream Free, Instantly.
+                    </h2>
+                    <div id="landing-details" class="space-y-4 text-xl text-gray-300 mb-10">
+                        <!-- Details injected or displayed based on loading status -->
+                        <p id="loading-status" class="mt-4 text-sm text-gray-400">Please wait while the playlist loads...</p>
+                    </div>
+                    
+                    <button id="start-watching-btn" onclick="showPlayerView()" class="bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-10 text-xl rounded-full shadow-xl transform hover:scale-[1.03] transition duration-300 disabled:opacity-50" disabled>
+                        Loading Channels...
+                    </button>
+                </div>
+            </div>
+
+            <!-- 2. PLAYER VIEW -->
+            <div id="player-view" class="hidden flex-col items-center justify-center" style="min-height: 100%;">
+
+                <!-- Video Player Container -->
+                <div class="w-full max-w-5xl lg:max-w-7xl bg-black rounded-xl overflow-hidden shadow-2xl aspect-video relative mb-4">
+                    <video id="video-player" controls class="w-full h-full object-contain" poster="https://placehold.co/1280x720/1e293b/ffffff?text=AKM+TV+Player"></video>
+                    <div id="video-status" class="absolute inset-0 bg-black bg-opacity-70 flex flex-col items-center justify-center text-center p-4 transition-opacity duration-300" style="display: flex;">
+                        <svg class="h-10 w-10 text-red-500 animate-spin mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <p class="text-xl font-medium text-gray-200 mb-2">Ready to Stream</p>
+                        <p class="text-sm text-gray-400">Select a channel from the list on the left to begin playback.</p>
+                    </div>
+                </div>
+
+                <!-- Current Channel Info -->
+                <div class="mt-0 p-4 bg-zinc-800 rounded-xl w-full max-w-5xl lg:max-w-7xl shadow-md">
+                    <p class="text-sm text-gray-400">Now Playing:</p>
+                    <p id="current-channel-name" class="text-xl font-bold text-red-400 truncate">No Channel Selected</p>
+                </div>
+
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // --- Global State and Constants ---
+        const VIDEO_ID = 'video-player';
+        const CHANNEL_LIST_ID = 'channel-list';
+        
+        // <<< IMPORTANT: CHANGE THIS URL TO UPDATE THE PLAYLIST >>>
+        const DEFAULT_M3U_URL = 'https://iptv-org.github.io/iptv/countries/in.m3u';
+        // <<< IMPORTANT: CHANGE THIS URL TO UPDATE THE PLAYLIST >>>
+
+        const LAPTOP_BREAKPOINT = 768; // Tailwind MD breakpoint
+        
+        let hls = null;
+        let channelsData = {}; // Structured channel data
+
+        // Exposing initFirebase from module to window scope
+        const initFirebase = window.initFirebase || (() => console.log('Firebase stub: Environment variables not found.'));
+
+        // --- View Management ---
+        
+        function showPlayerView() {
+            document.getElementById('landing-page').classList.add('hidden');
+            document.getElementById('player-view').classList.remove('hidden');
+            document.getElementById('player-view').classList.add('flex');
+
+            // On mobile, ensure sidebar is hidden when moving to player view
+            if (window.innerWidth < LAPTOP_BREAKPOINT) {
+                 document.getElementById('sidebar').classList.add('sidebar-hidden');
+                 document.getElementById('sidebar').classList.remove('sidebar-visible');
+            }
+
+            // Automatically load the first channel if available
+            const firstChannelBtn = document.querySelector('.channel-btn');
+            if (firstChannelBtn) {
+                firstChannelBtn.click();
+            }
+        }
+        
+        /**
+         * Updates the landing page to show an error message.
+         */
+        function updateLoadingErrorState(errorMessage) {
+            const landingDetails = document.getElementById('landing-details');
+            const startBtn = document.getElementById('start-watching-btn');
+            
+            landingDetails.innerHTML = `
+                <p class="text-xl text-red-400 font-medium">${errorMessage}</p>
+                <p class="text-sm text-gray-500 pt-2">Check the URL constant in the code and ensure it is accessible.</p>
+            `;
+            startBtn.textContent = 'Loading Failed';
+            startBtn.disabled = true;
+        }
+
+        /**
+         * Updates the landing page to show feature messages after successful loading.
+         */
+        function showFeatureMessage(groupCount) {
+            const landingDetails = document.getElementById('landing-details');
+            const startBtn = document.getElementById('start-watching-btn');
+
+            landingDetails.innerHTML = `
+                <div class="space-y-6 text-xl text-gray-300">
+                    <p class="text-2xl md:text-3xl font-bold text-white mb-2">Your Free Stream Awaits!</p>
+                    <ul class="list-none space-y-3 text-left w-full max-w-sm mx-auto p-4 bg-zinc-800 rounded-xl shadow-inner">
+                        <li class="flex items-center">
+                            <svg class="w-6 h-6 text-red-500 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <span class="font-semibold text-gray-100">Watch Free 24/7, Always!</span>
+                        </li>
+                        <li class="flex items-center">
+                            <svg class="w-6 h-6 text-red-500 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"></path></svg>
+                            <span class="font-semibold text-gray-100">Access Anytime, Anywhere</span>
+                        </li>
+                        <li class="flex items-center">
+                            <svg class="w-6 h-6 text-red-500 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                            <span class="font-semibold text-gray-100">Fast & Reliable Streaming</span>
+                        </li>
+                    </ul>
+                </div>
+            `;
+            startBtn.textContent = 'Start Watching Now';
+            startBtn.disabled = groupCount === 0;
+        }
+
+        // --- Initialization & Loading Logic ---
+
+        async function initApp() {
+            // 1. Initialize Firebase/Auth (if environment variables exist)
+            await initFirebase();
+            
+            // 2. Load the hardcoded M3U URL on startup
+            await loadM3UFromUrl(DEFAULT_M3U_URL);
+
+            // 3. Setup Search Listener
+            setupSearchListener();
+
+            // 4. Set initial sidebar state for small screens
+            if (window.innerWidth < LAPTOP_BREAKPOINT) {
+                document.getElementById('sidebar').classList.add('sidebar-hidden');
+            }
+        }
+
+        async function loadM3UFromUrl(url) {
+            const listContainer = document.getElementById(CHANNEL_LIST_ID);
+            
+            // Display initial loading message
+            const loadingStatusElement = document.getElementById('loading-status');
+            if (loadingStatusElement) {
+                loadingStatusElement.textContent = `Fetching playlist from code: ${url}`;
+            }
+
+            try {
+                const response = await fetch(url);
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+
+                const m3uContent = await response.text();
+                const parseResult = parseM3U(m3uContent);
+
+                if (parseResult.error) {
+                    throw new Error(parseResult.error);
+                }
+
+                // Success - Update UI
+                channelsData = parseResult.data;
+                renderChannelList(channelsData);
+                
+                const groupCount = Object.keys(channelsData).length;
+                
+                // <<< NEW: Display features message on success >>>
+                showFeatureMessage(groupCount);
+                // <<< END NEW >>>
+
+            } catch (error) {
+                console.error("Fetch/Load Error:", error);
+                const errorMsg = "Could not load playlist. Check the hardcoded URL for errors or CORS issues.";
+                
+                updateLoadingErrorState(errorMsg);
+                listContainer.innerHTML = '<p class="text-red-400 text-sm">Loading failed. Check the URL and network.</p>';
+                channelsData = {};
+            }
+        }
+
+
+        // --- UI & Search Functions ---
+
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            if (window.innerWidth < LAPTOP_BREAKPOINT) {
+                sidebar.classList.toggle('sidebar-hidden');
+                sidebar.classList.toggle('sidebar-visible');
+            }
+        }
+
+        function setupSearchListener() {
+            document.getElementById('channel-search-input').addEventListener('input', (event) => {
+                filterChannels(event.target.value.trim());
+            });
+        }
+
+        function filterChannels(query) {
+            const listContainer = document.getElementById(CHANNEL_LIST_ID);
+            const groups = listContainer.querySelectorAll('.group');
+            const lowerCaseQuery = query.toLowerCase();
+            const isSearching = query !== '';
+
+            groups.forEach(group => {
+                const channelsContainer = group.querySelector('[id^="channels-"]');
+                if (!channelsContainer) return;
+
+                const groupHeader = group.querySelector('button.font-bold');
+                const channelButtons = channelsContainer.querySelectorAll('.channel-btn');
+
+                let groupHasVisibleChannel = false;
+
+                // 1. Filter Channels within the group
+                channelButtons.forEach(btn => {
+                    const channelName = btn.textContent.toLowerCase();
+                    if (channelName.includes(lowerCaseQuery)) {
+                        btn.style.display = 'block';
+                        groupHasVisibleChannel = true;
+                    } else {
+                        btn.style.display = 'none';
+                    }
+                });
+
+                // 2. Manage Group Header Visibility and Collapse State
+                if (groupHeader) {
+                    const targetId = groupHeader.getAttribute('data-target');
+                    const icon = document.getElementById(`icon-${targetId.replace('channels-', '')}`);
+
+                    if (groupHasVisibleChannel || !isSearching) {
+                        groupHeader.style.display = 'flex';
+                        
+                        if (isSearching) {
+                            // Searching: Force expand to show results
+                            channelsContainer.style.maxHeight = channelsContainer.scrollHeight + 'px';
+                            if (icon) icon.classList.add('rotate-90');
+                        } else {
+                             // Not searching: Reset to initial open/closed state
+                             const firstGroupKey = Object.keys(channelsData)[0];
+                             const isFirstGroup = (firstGroupKey && firstGroupKey.replace(/\s/g, '-') === targetId.replace('channels-', ''));
+                             
+                             if (isFirstGroup) {
+                                channelsContainer.style.maxHeight = channelsContainer.scrollHeight + 'px';
+                                if (icon) icon.classList.add('rotate-90');
+                             } else {
+                                channelsContainer.style.maxHeight = '0px';
+                                if (icon) icon.classList.remove('rotate-90');
+                             }
+                        }
+                    } else {
+                        // Hide group if no channels match the search query
+                        groupHeader.style.display = 'none';
+                    }
+                }
+            });
+        }
+
+
+        function renderChannelList(channelsByGroup) {
+            const listContainer = document.getElementById(CHANNEL_LIST_ID);
+            listContainer.innerHTML = ''; // Clear existing list
+            
+            if (Object.keys(channelsByGroup).length === 0) {
+                listContainer.innerHTML = '<p class="text-gray-500 text-sm">No channels found in the playlist.</p>';
+                return;
+            }
+
+            for (const group in channelsByGroup) {
+                const groupElement = document.createElement('div');
+                groupElement.className = 'group';
+
+                // Group Header (Collapsible)
+                const header = document.createElement('button');
+                header.className = 'w-full text-left font-bold text-base p-2 mt-3 mb-1 bg-zinc-700 hover:bg-zinc-600 rounded-lg transition duration-150 flex justify-between items-center focus:outline-none';
+                header.innerHTML = `<span>${group}</span><span id="icon-${group.replace(/\s/g, '-')}" class="transform transition duration-300">▶</span>`;
+                header.setAttribute('data-target', `channels-${group.replace(/\s/g, '-')}`);
+                header.onclick = toggleGroup;
+                groupElement.appendChild(header);
+
+                // Channels Container
+                const channelsContainer = document.createElement('div');
+                channelsContainer.id = `channels-${group.replace(/\s/g, '-')}`;
+                channelsContainer.className = 'pl-2 channel-group-content'; 
+
+                channelsByGroup[group].forEach(channel => {
+                    const channelBtn = document.createElement('button');
+                    channelBtn.className = 'w-full text-left text-sm py-1.5 px-2 my-0.5 rounded-lg truncate hover:bg-red-600 hover:text-white transition duration-150 channel-btn bg-zinc-800 text-gray-200 block';
+                    channelBtn.textContent = channel.name;
+                    channelBtn.onclick = () => {
+                        loadChannel(channel.url, channel.name);
+                        // Visually update active button
+                        document.querySelectorAll('.channel-btn').forEach(btn => btn.classList.remove('bg-red-600', 'text-white'));
+                        channelBtn.classList.add('bg-red-600', 'text-white');
+                        // Hide sidebar on mobile after selection
+                        if (window.innerWidth < LAPTOP_BREAKPOINT) toggleSidebar();
+                    };
+                    channelsContainer.appendChild(channelBtn);
+                });
+
+                groupElement.appendChild(channelsContainer);
+                listContainer.appendChild(groupElement);
+
+                // Initialize state *after* elements are in the DOM to get scrollHeight
+                const isFirstGroup = (Object.keys(channelsByGroup)[0] === group);
+                const icon = document.getElementById(`icon-${group.replace(/\s/g, '-')}`);
+                
+                if (isFirstGroup) {
+                    channelsContainer.style.maxHeight = channelsContainer.scrollHeight + 'px';
+                    icon.classList.add('rotate-90');
+                } else {
+                    channelsContainer.style.maxHeight = '0px';
+                    icon.classList.remove('rotate-90');
+                }
+            }
+        }
+
+        function toggleGroup(event) {
+            const targetId = event.currentTarget.getAttribute('data-target');
+            const targetElement = document.getElementById(targetId);
+            const icon = document.getElementById(`icon-${targetId.replace('channels-', '')}`);
+
+            if (targetElement.style.maxHeight === '0px' || targetElement.style.maxHeight === '') {
+                targetElement.style.maxHeight = targetElement.scrollHeight + 'px';
+                icon.classList.add('rotate-90');
+            } else {
+                targetElement.style.maxHeight = '0px';
+                icon.classList.remove('rotate-90');
+            }
+        }
+
+
+        // --- M3U Parsing Logic (No change) ---
+        function parseM3U(m3uContent) {
+            const lines = m3uContent.split('\n');
+            const channelsByGroup = {};
+            let currentChannel = {};
+            let isM3U = false;
+
+            if (lines.length > 0 && lines[0].trim() === '#EXTM3U') {
+                isM3U = true;
+            }
+
+            if (!isM3U) {
+                return { error: 'Playlist does not start with #EXTM3U directive.', data: null };
+            }
+
+            for (let i = 1; i < lines.length; i++) {
+                const line = lines[i].trim();
+
+                if (line.startsWith('#EXTINF')) {
+                    const attributes = {};
+                    const attrMatch = line.match(/([a-zA-Z0-9-]+)="([^"]*)"/g) || [];
+                    attrMatch.forEach(attr => {
+                        const parts = attr.split('=', 2);
+                        attributes[parts[0]] = parts[1].slice(1, -1);
+                    });
+
+                    const nameMatch = line.match(/,(.*)$/);
+                    const name = nameMatch ? nameMatch[1].trim() : 'Unknown Channel';
+                    const group = attributes['group-title'] || 'Uncategorized';
+
+                    currentChannel = { name, group, attributes };
+
+                } else if (line.startsWith('http') || line.startsWith('https')) {
+                    if (currentChannel.name) {
+                        const channelUrl = line.trim();
+                        currentChannel.url = channelUrl;
+
+                        if (!channelsByGroup[currentChannel.group]) {
+                            channelsByGroup[currentChannel.group] = [];
+                        }
+                        channelsByGroup[currentChannel.group].push(currentChannel);
+                        currentChannel = {};
+                    }
+                }
+            }
+
+            return { data: channelsByGroup, error: null };
+        }
+
+
+        // --- Video Player Logic (No change) ---
+        function loadChannel(url, name) {
+            const video = document.getElementById(VIDEO_ID);
+            const status = document.getElementById('video-status');
+            const currentChannelName = document.getElementById('current-channel-name');
+
+            currentChannelName.textContent = name;
+            // Hide status overlay and attempt playback
+            status.style.opacity = 0;
+            status.style.display = 'none';
+
+            if (hls) {
+                hls.destroy();
+                hls = null;
+            }
+
+            if (Hls.isSupported()) {
+                hls = new Hls();
+                hls.attachMedia(video);
+
+                hls.on(Hls.Events.MEDIA_ATTACHED, function () {
+                    hls.loadSource(url);
+                });
+
+                hls.on(Hls.Events.ERROR, function (event, data) {
+                    if (data.fatal) {
+                        console.error('HLS Fatal Error:', data.details);
+                        status.querySelector('p:nth-child(2)').textContent = 'Stream error or unsupported format. Try a different channel.';
+                        status.style.opacity = 1;
+                        status.style.display = 'flex';
+                        switch (data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log("Attempting recovery...");
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                hls.destroy();
+                                break;
+                        }
+                    }
+                });
+
+            } else if (video.canPlayType('application/vnd.apple.mpegurl') || video.canPlayType('application/x-mpegurl')) {
+                video.src = url;
+            } else {
+                console.error("Browser lacks support for HLS streaming.");
+                currentChannelName.textContent = 'ERROR: HLS not supported on this browser.';
+                status.querySelector('p:nth-child(2)').textContent = 'Your browser does not natively support HLS streams.';
+                status.style.opacity = 1;
+                status.style.display = 'flex';
+            }
+
+            video.play().catch(e => console.log("Video playback paused or blocked:", e));
+        }
+
+        // Run initialization on page load
+        window.addEventListener('load', initApp);
+
+        // Handle sidebar state on resize
+        window.addEventListener('resize', () => {
+            const sidebar = document.getElementById('sidebar');
+            if (window.innerWidth >= LAPTOP_BREAKPOINT) {
+                // On desktop, ensure mobile classes are removed
+                sidebar.classList.remove('sidebar-hidden', 'sidebar-visible');
+            } else {
+                 // On mobile, keep it hidden if the player is active
+                 if (document.getElementById('player-view').classList.contains('flex')) {
+                     sidebar.classList.add('sidebar-hidden');
+                     sidebar.classList.remove('sidebar-visible'); 
+                 }
+            }
+        });
+
+    </script>
+</body>
+</html>
